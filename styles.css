@@ -279,6 +279,8 @@ body.is-locked {
     padding: 10px 14px;
     border-radius: 14px;
     font-weight: 800;
+    font-size: 0.78rem;
+    line-height: 1.15;
 }
 
 .secondary-action {
@@ -334,6 +336,19 @@ body.is-locked {
     padding: 4px 4px 16px;
 }
 
+.schedule-nav-actions {
+    display: grid;
+    gap: 8px;
+    justify-items: end;
+    flex-shrink: 0;
+}
+
+.schedule-nav-actions .text-action {
+    min-height: 32px;
+    padding: 7px 10px;
+    font-size: 0.72rem;
+}
+
 .schedule-header h3 {
     font-size: 1.4rem;
     margin-bottom: 6px;
@@ -346,9 +361,9 @@ body.is-locked {
 }
 
 .schedule-scroll {
-    max-height: min(70vh, 860px);
-    overflow: auto;
-    padding-right: 4px;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
 }
 
 .time-grid {
@@ -623,16 +638,18 @@ body.is-locked {
 
 .sheet {
     position: fixed;
+    top: max(8px, env(safe-area-inset-top));
     left: 12px;
     right: 12px;
-    bottom: 10px;
+    bottom: max(8px, env(safe-area-inset-bottom));
     z-index: 55;
     max-width: 520px;
     margin: 0 auto;
-    max-height: calc(100vh - 24px - env(safe-area-inset-top));
+    max-height: none;
     overflow: auto;
     border-radius: 30px;
     padding: 10px 16px calc(20px + env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
 }
 
 .sheet-handle {

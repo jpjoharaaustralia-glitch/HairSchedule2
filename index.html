@@ -73,8 +73,8 @@
 
                 <div class="toolbar">
                     <button class="pill-button primary-button" type="button" id="datePickerBtn">Choose date</button>
-                    <button class="pill-button" type="button" id="addAppointmentBtn">Add appointment</button>
-                    <button class="pill-button" type="button" id="toggleUpdateModeBtn">Update appointment</button>
+                    <button class="pill-button" type="button" id="addAppointmentBtn">Add</button>
+                    <button class="pill-button" type="button" id="toggleUpdateModeBtn">Update</button>
                 </div>
 
                 <div class="mode-banner is-hidden" id="updateModeBanner">Tap any booking in the schedule to update it.</div>
@@ -85,7 +85,10 @@
                             <h3 id="scheduleDateLabel">Wednesday</h3>
                             <p id="scheduleSummary">No appointments yet.</p>
                         </div>
-                        <button class="text-action" type="button" id="nextWorkingDayBtn">Next salon day</button>
+                        <div class="schedule-nav-actions">
+                            <button class="text-action" type="button" id="previousWorkingDayBtn">Previous salon day</button>
+                            <button class="text-action" type="button" id="nextWorkingDayBtn">Next salon day</button>
+                        </div>
                     </div>
 
                     <div class="schedule-scroll" id="scheduleScroll">

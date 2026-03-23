@@ -1,6 +1,6 @@
 (function () {
     const STORAGE_KEY = "dawn-salon-scheduler-v1";
-const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
+    const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_7iv53G1iopzpcCrN_oz6wg_-VzVTV2l";
     const WORKING_DAY_SET = new Set([3, 5, 6]);
     const HOUR_START = 7;
@@ -39,6 +39,7 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
         scheduleDateLabel: document.getElementById("scheduleDateLabel"),
         scheduleSummary: document.getElementById("scheduleSummary"),
         scheduleScroll: document.getElementById("scheduleScroll"),
+        previousWorkingDayBtn: document.getElementById("previousWorkingDayBtn"),
         nextWorkingDayBtn: document.getElementById("nextWorkingDayBtn"),
         timeGrid: document.getElementById("timeGrid"),
         customerSearchInput: document.getElementById("customerSearchInput"),
@@ -137,6 +138,10 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
         });
 
         refs.datePickerBtn.addEventListener("click", () => openDatePicker("schedule", state.selectedDate));
+        refs.previousWorkingDayBtn.addEventListener("click", () => {
+            state.selectedDate = getPreviousWorkingDate(addDays(parseLocalDate(state.selectedDate), -1));
+            renderSchedule();
+        });
         refs.nextWorkingDayBtn.addEventListener("click", () => {
             state.selectedDate = getNextWorkingDate(addDays(parseLocalDate(state.selectedDate), 1));
             renderSchedule();
@@ -285,7 +290,7 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
     function renderSchedule() {
         refs.datePickerBtn.textContent = formatDateForButton(state.selectedDate);
         refs.toggleUpdateModeBtn.classList.toggle("is-active", state.updateMode);
-        refs.toggleUpdateModeBtn.textContent = state.updateMode ? "Finish updating" : "Update appointment";
+        refs.toggleUpdateModeBtn.textContent = state.updateMode ? "Done" : "Update";
         refs.addAppointmentBtn.classList.toggle("is-hidden", state.updateMode);
         refs.updateModeBanner.classList.toggle("is-hidden", !state.updateMode);
 
@@ -492,14 +497,16 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
             const current = addDays(firstVisible, index);
             const iso = toIsoDate(current);
             const isThisMonth = current.getMonth() === state.calendarMonth.getMonth();
+            const isPreviousMonthCell = current < state.calendarMonth;
             const isAllowed = WORKING_DAY_SET.has(current.getDay());
+            const isPastAppointmentDate = state.datePickerTarget === "appointment" && isDateBeforeToday(iso);
 
             const button = document.createElement("button");
             button.type = "button";
             button.className = "calendar-day";
             button.textContent = String(current.getDate());
 
-            if (!isThisMonth || !isAllowed) {
+            if ((!isThisMonth && isPreviousMonthCell) || !isAllowed || isPastAppointmentDate) {
                 button.classList.add("is-disabled");
                 button.disabled = true;
             } else {
@@ -726,12 +733,13 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
 
     function openAppointmentSheet(appointmentId) {
         closeDrawer();
+        const defaultAppointmentDate = isDateBeforeToday(state.selectedDate) ? getNextWorkingDate(new Date()) : state.selectedDate;
         refs.appointmentForm.reset();
         refs.appointmentForm.elements.appointmentId.value = "";
         refs.appointmentForm.elements.customerId.value = "";
         refs.appointmentForm.elements.serviceId.value = "";
-        refs.appointmentDateValue.value = state.selectedDate;
-        refs.appointmentDateTrigger.textContent = formatDateForHeading(state.selectedDate);
+        refs.appointmentDateValue.value = defaultAppointmentDate;
+        refs.appointmentDateTrigger.textContent = formatDateForHeading(defaultAppointmentDate);
         refs.deleteAppointmentBtn.classList.add("is-hidden");
         clearAppointmentError();
         hideAllSuggestions();
@@ -741,7 +749,7 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
             if (!appointment) {
                 return;
             }
-            refs.appointmentSheetTitle.textContent = "Update appointment";
+            refs.appointmentSheetTitle.textContent = "Update";
             refs.appointmentForm.elements.appointmentId.value = appointment.id;
             refs.appointmentForm.elements.customerId.value = appointment.customerId || "";
             refs.appointmentForm.elements.serviceId.value = appointment.serviceId || "";
@@ -1046,6 +1054,10 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
         }
         if (!date || !isWorkingDate(date)) {
             showAppointmentError("Please choose a Wednesday, Friday, or Saturday.");
+            return;
+        }
+        if (!form.appointmentId.value && isDateBeforeToday(date)) {
+            showAppointmentError("New appointments cannot be added before today.");
             return;
         }
         if (!time) {
@@ -1481,8 +1493,24 @@ const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
         return toIsoDate(current);
     }
 
+    function getPreviousWorkingDate(date) {
+        let current = parseDateInput(date);
+        while (!WORKING_DAY_SET.has(current.getDay())) {
+            current = addDays(current, -1);
+        }
+        return toIsoDate(current);
+    }
+
     function isWorkingDate(dateString) {
         return WORKING_DAY_SET.has(parseLocalDate(dateString).getDay());
+    }
+
+    function getTodayIsoDate() {
+        return toIsoDate(new Date());
+    }
+
+    function isDateBeforeToday(dateString) {
+        return dateString < getTodayIsoDate();
     }
 
     function formatDateForButton(dateString) {
