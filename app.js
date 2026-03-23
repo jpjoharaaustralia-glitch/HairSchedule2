@@ -1,7 +1,7 @@
 (function () {
     const STORAGE_KEY = "dawn-salon-scheduler-v1";
-    const SUPABASE_URL = "https://dkvoxbqxwxcfgmtfrrme.supabase.co";
-    const SUPABASE_ANON_KEY = "sb_publishable_7l8XECUJ9mS5jIa-PEp2uQ_bDBixBmY";
+const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_7iv53G1iopzpcCrN_oz6wg_-VzVTV2l";
     const WORKING_DAY_SET = new Set([3, 5, 6]);
     const HOUR_START = 7;
     const HOUR_END = 19;
