@@ -38,6 +38,13 @@
             </section>
 
             <section class="drawer-panel">
+                <h3>Holiday dates</h3>
+                <p>These dates are blocked from the schedule. Remove a holiday to make that day bookable again.</p>
+                <button class="secondary-action" type="button" id="addHolidayBtn">Add holiday date</button>
+                <div class="holiday-list" id="holidayList"></div>
+            </section>
+
+            <section class="drawer-panel">
                 <h3>Data backup</h3>
                 <p>Online save is the main system. These backup files are optional, just in case.</p>
                 <button class="secondary-action" type="button" id="exportDataBtn">Download backup</button>
@@ -68,7 +75,7 @@
                 <div class="section-hero">
                     <p class="eyebrow">Appointments</p>
                     <h2>Working-day schedule</h2>
-                    <p class="section-copy">Choose a Wednesday, Friday, or Saturday and see the full day from 7am to 7pm.</p>
+                    <p class="section-copy">Choose a Wednesday, Friday, or Saturday and see the full day from 08:00 to 19:00.</p>
                 </div>
 
                 <div class="toolbar">
@@ -177,7 +184,7 @@
 
                 <label class="field">
                     <span>Time</span>
-                    <input id="appointmentTime" name="time" type="time" min="07:00" max="19:00" step="900" required>
+                    <input id="appointmentTime" name="time" type="time" min="08:00" max="19:00" step="300" required>
                 </label>
 
                 <label class="field">
@@ -185,12 +192,18 @@
                     <input id="appointmentDuration" name="duration" type="number" min="15" max="720" step="15" inputmode="numeric" placeholder="30">
                 </label>
 
+                <div class="helper-card helper-warning is-hidden" id="appointmentOverlapWarning"></div>
+                <div class="customer-history is-hidden" id="appointmentHistoryPanel">
+                    <div class="customer-history-title">Customer appointments</div>
+                    <div id="appointmentHistoryList"></div>
+                </div>
+
                 <div class="form-note">Customer name or haircut type can be blank, but not both.</div>
                 <div class="form-error is-hidden" id="appointmentFormError"></div>
 
                 <div class="sheet-actions">
                     <button class="submit-button" type="submit">Save appointment</button>
-                    <button class="ghost-danger is-hidden" type="button" id="deleteAppointmentBtn">Delete appointment</button>
+                    <button class="ghost-danger is-hidden" type="button" id="deleteAppointmentBtn">Delete</button>
                 </div>
             </form>
         </section>
@@ -222,6 +235,11 @@
                 <label class="field">
                     <span>Phone number</span>
                     <input name="phone" type="tel" inputmode="tel" placeholder="Optional">
+                </label>
+
+                <label class="field">
+                    <span>Notes</span>
+                    <textarea name="notes" rows="4" placeholder="Optional"></textarea>
                 </label>
 
                 <label class="field">

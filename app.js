@@ -3,10 +3,17 @@
     const SUPABASE_URL = "https://xjcqubsxdmmiyqowguhf.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_7iv53G1iopzpcCrN_oz6wg_-VzVTV2l";
     const WORKING_DAY_SET = new Set([3, 5, 6]);
-    const HOUR_START = 7;
+    const HOUR_START = 8;
     const HOUR_END = 19;
     const TOTAL_MINUTES = (HOUR_END - HOUR_START) * 60;
-    const MINUTE_HEIGHT = 1.2;
+    const MINUTE_HEIGHT = 4.8;
+    const APPOINTMENT_COLOURS = [
+        { start: "rgba(132, 81, 92, 0.98)", end: "rgba(88, 50, 63, 0.98)", shadow: "rgba(71, 36, 43, 0.2)" },
+        { start: "rgba(199, 102, 85, 0.98)", end: "rgba(143, 67, 55, 0.98)", shadow: "rgba(118, 48, 36, 0.18)" },
+        { start: "rgba(103, 124, 83, 0.98)", end: "rgba(71, 93, 57, 0.98)", shadow: "rgba(56, 72, 46, 0.18)" },
+        { start: "rgba(79, 116, 146, 0.98)", end: "rgba(50, 82, 108, 0.98)", shadow: "rgba(38, 59, 79, 0.18)" },
+        { start: "rgba(160, 111, 59, 0.98)", end: "rgba(118, 78, 37, 0.98)", shadow: "rgba(88, 59, 31, 0.18)" }
+    ];
     let supabaseClient = null;
     let authSubscription = null;
     let remoteSaveTimer = null;
@@ -21,7 +28,8 @@
             { id: "svc-colour-refresh", name: "Colour Refresh", duration: 90 },
             { id: "svc-full-colour", name: "Full Colour", duration: 120 }
         ],
-        colourCharts: []
+        colourCharts: [],
+        holidays: ["2026-04-22", "2026-04-24"]
     };
 
     const refs = {
@@ -48,6 +56,8 @@
         librarySegmentButtons: Array.from(document.querySelectorAll(".segment-button")),
         libraryAddBtn: document.getElementById("libraryAddBtn"),
         libraryList: document.getElementById("libraryList"),
+        addHolidayBtn: document.getElementById("addHolidayBtn"),
+        holidayList: document.getElementById("holidayList"),
         exportDataBtn: document.getElementById("exportDataBtn"),
         importDataInput: document.getElementById("importDataInput"),
         authStatusText: document.getElementById("authStatusText"),
@@ -72,6 +82,9 @@
         appointmentDateValue: document.getElementById("appointmentDateValue"),
         appointmentTime: document.getElementById("appointmentTime"),
         appointmentDuration: document.getElementById("appointmentDuration"),
+        appointmentOverlapWarning: document.getElementById("appointmentOverlapWarning"),
+        appointmentHistoryPanel: document.getElementById("appointmentHistoryPanel"),
+        appointmentHistoryList: document.getElementById("appointmentHistoryList"),
         customerSuggestions: document.getElementById("customerSuggestions"),
         serviceSuggestions: document.getElementById("serviceSuggestions"),
         appointmentFormError: document.getElementById("appointmentFormError"),
@@ -100,13 +113,15 @@
         calendarGrid: document.getElementById("calendarGrid")
     };
 
-    const initialDate = getNextWorkingDate(new Date());
+    const loadedData = loadData();
+    const initialDate = getNextWorkingDate(new Date(), loadedData);
     const state = {
         section: "appointments",
         libraryMode: "services",
         updateMode: false,
+        expandedCustomerId: null,
         selectedDate: initialDate,
-        data: loadData(),
+        data: loadedData,
         activeSheet: null,
         datePickerTarget: null,
         datePickerReturnSheet: null,
@@ -139,11 +154,11 @@
 
         refs.datePickerBtn.addEventListener("click", () => openDatePicker("schedule", state.selectedDate));
         refs.previousWorkingDayBtn.addEventListener("click", () => {
-            state.selectedDate = getPreviousWorkingDate(addDays(parseLocalDate(state.selectedDate), -1));
+            state.selectedDate = getPreviousWorkingDate(addDays(parseLocalDate(state.selectedDate), -1), state.data);
             renderSchedule();
         });
         refs.nextWorkingDayBtn.addEventListener("click", () => {
-            state.selectedDate = getNextWorkingDate(addDays(parseLocalDate(state.selectedDate), 1));
+            state.selectedDate = getNextWorkingDate(addDays(parseLocalDate(state.selectedDate), 1), state.data);
             renderSchedule();
         });
         refs.addAppointmentBtn.addEventListener("click", () => openAppointmentSheet());
@@ -168,6 +183,7 @@
                 openColourSheet();
             }
         });
+        refs.addHolidayBtn.addEventListener("click", () => openDatePicker("holiday", state.selectedDate));
 
         refs.exportDataBtn.addEventListener("click", exportData);
         refs.importDataInput.addEventListener("change", importData);
@@ -191,8 +207,14 @@
         refs.appointmentServiceName.addEventListener("input", handleAppointmentServiceInput);
         refs.appointmentServiceName.addEventListener("blur", () => window.setTimeout(syncAppointmentServiceFromInput, 120));
         refs.appointmentDateTrigger.addEventListener("click", () => openDatePicker("appointment", refs.appointmentDateValue.value || state.selectedDate));
-        refs.appointmentDuration.addEventListener("input", syncAppointmentTimeBounds);
-        refs.appointmentTime.addEventListener("input", clearAppointmentError);
+        refs.appointmentDuration.addEventListener("input", () => {
+            syncAppointmentTimeBounds();
+            updateAppointmentOverlapWarning();
+            updateAppointmentHistoryPanel();
+        });
+        refs.appointmentTime.addEventListener("input", refreshAppointmentTimeState);
+        refs.appointmentTime.addEventListener("change", () => refreshAppointmentTimeState(true));
+        refs.appointmentTime.addEventListener("blur", () => refreshAppointmentTimeState(true));
         refs.appointmentForm.addEventListener("submit", saveAppointment);
         refs.deleteAppointmentBtn.addEventListener("click", deleteAppointment);
 
@@ -224,6 +246,7 @@
         renderSchedule();
         renderCustomers();
         renderLibrary();
+        renderHolidayList();
     }
 
     function renderSections() {
@@ -247,10 +270,18 @@
             void handleSessionChange(session);
         });
 
-        const { data, error } = await client.auth.getSession();
+        let data;
+        let error;
+        try {
+            ({ data, error } = await client.auth.getSession());
+        } catch (caughtError) {
+            state.syncStatus = "error";
+            renderSyncUi(getFriendlySyncError(caughtError));
+            return;
+        }
         if (error) {
             state.syncStatus = "error";
-            renderSyncUi("Could not check online login.");
+            renderSyncUi(getFriendlySyncError(error));
             return;
         }
 
@@ -288,10 +319,15 @@
     }
 
     function renderSchedule() {
+        if (isHolidayDate(state.selectedDate)) {
+            state.selectedDate = getNextWorkingDate(addDays(parseLocalDate(state.selectedDate), 1), state.data);
+        }
+
         refs.datePickerBtn.textContent = formatDateForButton(state.selectedDate);
         refs.toggleUpdateModeBtn.classList.toggle("is-active", state.updateMode);
         refs.toggleUpdateModeBtn.textContent = state.updateMode ? "Done" : "Update";
         refs.addAppointmentBtn.classList.toggle("is-hidden", state.updateMode);
+        refs.updateModeBanner.textContent = "Tap a booking to update it.";
         refs.updateModeBanner.classList.toggle("is-hidden", !state.updateMode);
 
         const items = getAppointmentsForDate(state.selectedDate);
@@ -304,14 +340,16 @@
         refs.timeGrid.innerHTML = "";
         refs.timeGrid.style.height = `${TOTAL_MINUTES * MINUTE_HEIGHT}px`;
 
-        for (let hour = HOUR_START; hour <= HOUR_END; hour += 1) {
+        for (let markerMinutes = HOUR_START * 60; markerMinutes <= HOUR_END * 60; markerMinutes += 5) {
             const marker = document.createElement("div");
             marker.className = "time-marker";
-            marker.style.top = `${(hour - HOUR_START) * 60 * MINUTE_HEIGHT}px`;
+            marker.classList.toggle("is-hour", markerMinutes % 60 === 0);
+            marker.classList.toggle("is-quarter", markerMinutes % 15 === 0);
+            marker.style.top = `${(markerMinutes - HOUR_START * 60) * MINUTE_HEIGHT}px`;
 
             const label = document.createElement("div");
             label.className = "time-marker-label";
-            label.textContent = formatHourLabel(hour);
+            label.textContent = markerMinutes % 15 === 0 ? timeFromMinutes(markerMinutes) : "";
 
             const line = document.createElement("div");
             line.className = "time-marker-line";
@@ -329,38 +367,58 @@
             empty.className = "empty-card";
             empty.style.position = "absolute";
             empty.style.top = "24px";
-            empty.style.left = "72px";
+            empty.style.left = "84px";
             empty.style.right = "10px";
             empty.textContent = "This day is free at the moment.";
             layer.appendChild(empty);
         } else {
-            items.forEach((appointment) => {
+            getAppointmentLayout(items).forEach((layout) => {
+                const appointment = layout.appointment;
                 const customer = getLinkedCustomer(appointment);
-                const top = (minutesFromTime(appointment.time) - HOUR_START * 60) * MINUTE_HEIGHT;
+                const top = (layout.startMinutes - HOUR_START * 60) * MINUTE_HEIGHT;
                 const height = Math.max(appointment.duration * MINUTE_HEIGHT, 72);
                 const phone = customer ? customer.phone : "";
                 const colour = customer ? resolveCustomerColourLabel(customer) : "";
+                const metaParts = [phone ? `Phone: ${phone}` : "", colour ? `Colour: ${colour}` : ""].filter(Boolean);
+                const palette = APPOINTMENT_COLOURS[layout.colourIndex % APPOINTMENT_COLOURS.length];
 
-                const card = document.createElement("button");
-                card.type = "button";
+                const card = document.createElement("article");
                 card.className = "appointment-card";
                 if (state.updateMode) {
                     card.classList.add("is-updateable");
                 }
+                if (layout.laneCount > 1) {
+                    card.classList.add("is-overlapping");
+                }
+
+                const horizontalInset = layout.laneCount > 1 ? { left: 10, right: 14, gap: 8 } : { left: 14, right: 28, gap: 0 };
+                if (layout.laneCount > 1) {
+                    const totalGap = horizontalInset.gap * (layout.laneCount - 1);
+                    card.style.left = `calc(${horizontalInset.left}px + ${layout.lane} * ((100% - ${horizontalInset.left + horizontalInset.right}px - ${totalGap}px) / ${layout.laneCount} + ${horizontalInset.gap}px))`;
+                    card.style.width = `calc((100% - ${horizontalInset.left + horizontalInset.right}px - ${totalGap}px) / ${layout.laneCount})`;
+                } else {
+                    card.style.left = `${horizontalInset.left}px`;
+                    card.style.width = `calc(100% - ${horizontalInset.left + horizontalInset.right}px)`;
+                }
+
                 card.style.top = `${top}px`;
                 card.style.height = `${height}px`;
+                card.style.background = `linear-gradient(180deg, ${palette.start}, ${palette.end})`;
+                card.style.boxShadow = `0 16px 28px ${palette.shadow}`;
                 card.innerHTML = `
                     <div class="appointment-time">${escapeHtml(`${formatTimeLabel(appointment.time)} - ${appointment.duration} mins`)}</div>
                     <div class="appointment-title">${escapeHtml(getAppointmentDisplayName(appointment, customer))}</div>
                     <div class="appointment-service">${escapeHtml(appointment.serviceName || "Appointment")}</div>
-                    <div class="appointment-meta">${escapeHtml(phone ? `Phone: ${phone}` : "")}${phone && colour ? "<br>" : ""}${escapeHtml(colour ? `Colour: ${colour}` : (!phone ? "No phone or colour chart saved." : ""))}</div>
+                    <div class="appointment-meta">${escapeHtml(metaParts.join(" - ") || "No phone or colour chart saved.")}</div>
                 `;
+
                 card.addEventListener("click", () => {
                     if (!state.updateMode) {
                         return;
                     }
                     openAppointmentSheet(appointment.id);
                 });
+
                 layer.appendChild(card);
             });
         }
@@ -376,7 +434,7 @@
                 if (!query) {
                     return true;
                 }
-                const haystack = [customer.name, customer.address, customer.phone, resolveCustomerColourLabel(customer)].join(" ");
+                const haystack = [customer.name, customer.address, customer.phone, customer.notes, resolveCustomerColourLabel(customer)].join(" ");
                 return normalize(haystack).includes(query);
             });
 
@@ -387,14 +445,17 @@
         }
 
         items.forEach((customer) => {
+            const bookings = getAppointmentsForCustomer(customer);
+            const isExpanded = state.expandedCustomerId === customer.id;
             const card = document.createElement("article");
-            card.className = "list-card";
+            card.className = "list-card is-clickable";
             card.innerHTML = `
                 <div class="list-card-header">
                     <div>
                         <h3 class="list-card-title">${escapeHtml(customer.name)}</h3>
-                        <p class="list-card-subtitle">${escapeHtml(customer.phone || "No phone number saved")}</p>
+                        <p class="list-card-subtitle">${escapeHtml(customer.phone || "No phone number saved")} - ${bookings.length} booking${bookings.length === 1 ? "" : "s"}</p>
                     </div>
+                    <div class="history-toggle">${isExpanded ? "Hide bookings" : "Show bookings"}</div>
                 </div>
                 <div class="detail-stack">
                     <div class="detail-row">
@@ -405,14 +466,32 @@
                         <div class="detail-label">Colour chart</div>
                         <div class="detail-value">${escapeHtml(resolveCustomerColourLabel(customer) || "No colour chart saved")}</div>
                     </div>
+                    <div class="detail-row">
+                        <div class="detail-label">Notes</div>
+                        <div class="detail-value">${escapeHtml(customer.notes || "No notes saved")}</div>
+                    </div>
+                </div>
+                <div class="customer-history ${isExpanded ? "" : "is-hidden"}">
+                    <div class="customer-history-title">Bookings</div>
+                    ${renderCustomerBookingsHtml(bookings)}
                 </div>
                 <div class="card-actions">
                     <button class="secondary-ghost" type="button" data-action="edit">Edit</button>
                     <button class="danger-ghost" type="button" data-action="delete">Delete</button>
                 </div>
             `;
-            card.querySelector('[data-action="edit"]').addEventListener("click", () => openCustomerSheet(customer.id));
-            card.querySelector('[data-action="delete"]').addEventListener("click", () => deleteCustomerById(customer.id));
+            card.addEventListener("click", () => {
+                state.expandedCustomerId = isExpanded ? null : customer.id;
+                renderCustomers();
+            });
+            card.querySelector('[data-action="edit"]').addEventListener("click", (event) => {
+                event.stopPropagation();
+                openCustomerSheet(customer.id);
+            });
+            card.querySelector('[data-action="delete"]').addEventListener("click", (event) => {
+                event.stopPropagation();
+                deleteCustomerById(customer.id);
+            });
             refs.customersList.appendChild(card);
         });
     }
@@ -481,6 +560,26 @@
         });
     }
 
+    function renderHolidayList() {
+        refs.holidayList.innerHTML = "";
+
+        if (!state.data.holidays.length) {
+            refs.holidayList.innerHTML = `<div class="holiday-empty">No holiday dates blocked.</div>`;
+            return;
+        }
+
+        state.data.holidays.forEach((holidayDate) => {
+            const row = document.createElement("div");
+            row.className = "holiday-row";
+            row.innerHTML = `
+                <div class="holiday-date">${escapeHtml(formatDateForHeading(holidayDate))}</div>
+                <button class="holiday-remove" type="button">Remove</button>
+            `;
+            row.querySelector(".holiday-remove").addEventListener("click", () => removeHolidayDate(holidayDate));
+            refs.holidayList.appendChild(row);
+        });
+    }
+
     function renderCalendar() {
         refs.calendarMonthLabel.textContent = state.calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
         refs.calendarGrid.innerHTML = "";
@@ -499,14 +598,17 @@
             const isThisMonth = current.getMonth() === state.calendarMonth.getMonth();
             const isPreviousMonthCell = current < state.calendarMonth;
             const isAllowed = WORKING_DAY_SET.has(current.getDay());
-            const isPastAppointmentDate = state.datePickerTarget === "appointment" && isDateBeforeToday(iso);
+            const isEditingAppointment = Boolean(refs.appointmentForm.elements.appointmentId.value);
+            const isPastAppointmentDate = state.datePickerTarget === "appointment" && !isEditingAppointment && isDateBeforeToday(iso);
+            const isHoliday = isHolidayDate(iso);
+            const shouldBlockHoliday = state.datePickerTarget === "schedule" || state.datePickerTarget === "appointment" || state.datePickerTarget === "holiday";
 
             const button = document.createElement("button");
             button.type = "button";
             button.className = "calendar-day";
             button.textContent = String(current.getDate());
 
-            if ((!isThisMonth && isPreviousMonthCell) || !isAllowed || isPastAppointmentDate) {
+            if ((!isThisMonth && isPreviousMonthCell) || !isAllowed || isPastAppointmentDate || (shouldBlockHoliday && isHoliday)) {
                 button.classList.add("is-disabled");
                 button.disabled = true;
             } else {
@@ -537,8 +639,14 @@
         } else if (state.datePickerTarget === "appointment") {
             refs.appointmentDateValue.value = isoDate;
             refs.appointmentDateTrigger.textContent = formatDateForHeading(isoDate);
+            updateAppointmentOverlapWarning();
+            updateAppointmentHistoryPanel();
             openSheet(state.datePickerReturnSheet || "appointmentSheet");
             state.datePickerReturnSheet = null;
+            return;
+        } else if (state.datePickerTarget === "holiday") {
+            addHolidayDate(isoDate);
+            closeSheet("datePickerSheet");
             return;
         }
         closeSheet("datePickerSheet");
@@ -592,11 +700,20 @@
         state.syncStatus = "syncing";
         renderSyncUi("Loading the shared planner...");
 
-        const { data, error } = await client
-            .from("salon_planner_state")
-            .select("owner_user_id, payload, updated_at")
-            .eq("owner_user_id", state.session.user.id)
-            .maybeSingle();
+        let data;
+        let error;
+        try {
+            ({ data, error } = await client
+                .from("salon_planner_state")
+                .select("owner_user_id, payload, updated_at")
+                .eq("owner_user_id", state.session.user.id)
+                .maybeSingle());
+        } catch (caughtError) {
+            state.isHydratingRemote = false;
+            state.syncStatus = "error";
+            renderSyncUi(getFriendlySyncError(caughtError));
+            return;
+        }
 
         state.isHydratingRemote = false;
 
@@ -636,15 +753,22 @@
         state.syncStatus = "syncing";
         renderSyncUi(isFirstSave ? "Creating the shared planner..." : "Saving to the shared planner...");
 
-        const { error } = await client
-            .from("salon_planner_state")
-            .upsert(
-                {
-                    owner_user_id: state.session.user.id,
-                    payload: state.data
-                },
-                { onConflict: "owner_user_id" }
-            );
+        let error;
+        try {
+            ({ error } = await client
+                .from("salon_planner_state")
+                .upsert(
+                    {
+                        owner_user_id: state.session.user.id,
+                        payload: state.data
+                    },
+                    { onConflict: "owner_user_id" }
+                ));
+        } catch (caughtError) {
+            state.syncStatus = "error";
+            renderSyncUi(getFriendlySyncError(caughtError));
+            return;
+        }
 
         if (error) {
             state.syncStatus = "error";
@@ -700,11 +824,21 @@
         state.syncStatus = "syncing";
         renderSyncUi("Signing in...");
 
-        const { error } = await client.auth.signInWithPassword({ email, password });
+        let error;
+        try {
+            ({ error } = await client.auth.signInWithPassword({ email, password }));
+        } catch (caughtError) {
+            const message = getFriendlySyncError(caughtError);
+            state.syncStatus = "error";
+            renderSyncUi(message);
+            showFormError(refs.authFormError, message);
+            return;
+        }
         if (error) {
             state.syncStatus = "error";
-            renderSyncUi("Sign in did not work.");
-            showFormError(refs.authFormError, error.message || "Sign in did not work.");
+            const message = getFriendlySyncError(error);
+            renderSyncUi(message);
+            showFormError(refs.authFormError, message);
             return;
         }
 
@@ -725,15 +859,23 @@
 
     function getFriendlySyncError(error) {
         const message = String(error?.message || "");
+        if (window.location.protocol === "file:") {
+            return "Open the planner through a website or local server. Salon login often fails from a local file.";
+        }
         if (message.includes("relation") && message.includes("salon_planner_state")) {
             return "The online save table is not set up yet. Follow the setup steps below.";
+        }
+        if (message === "Failed to fetch" || /network/i.test(message)) {
+            return "The planner could not reach Supabase. Check the project URL, internet connection, and that you are not opening the planner as a local file.";
         }
         return message || "Online save did not work.";
     }
 
     function openAppointmentSheet(appointmentId) {
         closeDrawer();
-        const defaultAppointmentDate = isDateBeforeToday(state.selectedDate) ? getNextWorkingDate(new Date()) : state.selectedDate;
+        const defaultAppointmentDate = isDateBeforeToday(state.selectedDate) || isHolidayDate(state.selectedDate)
+            ? getNextWorkingDate(new Date(), state.data)
+            : state.selectedDate;
         refs.appointmentForm.reset();
         refs.appointmentForm.elements.appointmentId.value = "";
         refs.appointmentForm.elements.customerId.value = "";
@@ -768,6 +910,8 @@
         syncAppointmentCustomerFromInput();
         syncAppointmentServiceFromInput();
         syncAppointmentTimeBounds();
+        updateAppointmentOverlapWarning();
+        updateAppointmentHistoryPanel();
         openSheet("appointmentSheet");
     }
 
@@ -790,6 +934,7 @@
             refs.customerForm.elements.name.value = customer.name;
             refs.customerForm.elements.address.value = customer.address || "";
             refs.customerForm.elements.phone.value = customer.phone || "";
+            refs.customerForm.elements.notes.value = customer.notes || "";
             refs.customerForm.elements.colourChartId.value = customer.colourChartId || "";
             refs.customerColourInput.value = resolveCustomerColourLabel(customer) || customer.colourLabel || "";
             refs.deleteCustomerBtn.classList.remove("is-hidden");
@@ -995,9 +1140,11 @@
                 exactMatch.address ? `Address: ${exactMatch.address}` : ""
             ].filter(Boolean).join(" - ");
             refs.appointmentCustomerMeta.textContent = details || "Saved customer selected.";
+            updateAppointmentHistoryPanel();
             return;
         }
         refs.appointmentCustomerMeta.textContent = refs.appointmentCustomerName.value.trim() ? "This will save as a typed name only." : "No saved customer selected yet.";
+        updateAppointmentHistoryPanel();
     }
 
     function syncAppointmentServiceFromInput() {
@@ -1027,11 +1174,97 @@
         const selectedService = resolveServiceFromInput(refs.appointmentForm.elements.serviceId.value, refs.appointmentServiceName.value);
         const duration = Math.max(Number(refs.appointmentDuration.value) || (selectedService ? selectedService.duration : 30), 15);
         const latestStart = HOUR_END * 60 - duration;
-        refs.appointmentTime.min = "07:00";
+        refs.appointmentTime.min = "08:00";
         refs.appointmentTime.max = timeFromMinutes(Math.max(latestStart, HOUR_START * 60));
         if (refs.appointmentTime.value && minutesFromTime(refs.appointmentTime.value) > latestStart) {
             refs.appointmentTime.value = timeFromMinutes(Math.max(latestStart, HOUR_START * 60));
         }
+        updateAppointmentOverlapWarning();
+    }
+
+    function refreshAppointmentTimeState(shouldNormalize) {
+        if (shouldNormalize) {
+            normalizeAppointmentTimeInput();
+        }
+        clearAppointmentError();
+        syncAppointmentTimeBounds();
+        updateAppointmentOverlapWarning();
+        updateAppointmentHistoryPanel();
+    }
+
+    function normalizeAppointmentTimeInput() {
+        const next = normalizeSalonTimeValue(refs.appointmentTime.value);
+        if (next && refs.appointmentTime.value !== next) {
+            refs.appointmentTime.value = next;
+        }
+    }
+
+    function normalizeSalonTimeValue(value) {
+        if (!/^\d{1,2}:\d{2}$/.test(String(value || ""))) {
+            return value;
+        }
+
+        let [hours, minutes] = String(value).split(":").map(Number);
+        if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+            return value;
+        }
+
+        if (hours > 0 && hours < HOUR_START) {
+            hours += 12;
+        }
+
+        let totalMinutes = (hours * 60) + minutes;
+        totalMinutes = Math.round(totalMinutes / 5) * 5;
+        totalMinutes = Math.max(totalMinutes, HOUR_START * 60);
+        totalMinutes = Math.min(totalMinutes, HOUR_END * 60);
+        return timeFromMinutes(totalMinutes);
+    }
+
+    function updateAppointmentOverlapWarning() {
+        const draft = getDraftAppointmentFromForm();
+        if (!draft || !draft.date || !draft.time) {
+            refs.appointmentOverlapWarning.classList.add("is-hidden");
+            refs.appointmentOverlapWarning.textContent = "";
+            return;
+        }
+
+        const overlaps = getOverlappingAppointments(draft);
+        if (!overlaps.length) {
+            refs.appointmentOverlapWarning.classList.add("is-hidden");
+            refs.appointmentOverlapWarning.textContent = "";
+            return;
+        }
+
+        const preview = overlaps
+            .slice(0, 2)
+            .map((appointment) => `${getAppointmentDisplayName(appointment, getLinkedCustomer(appointment))} at ${formatTimeLabel(appointment.time)}`)
+            .join(" and ");
+        const extraCount = overlaps.length > 2 ? ` plus ${overlaps.length - 2} more` : "";
+        refs.appointmentOverlapWarning.textContent = `Warning: this overlaps with ${preview}${extraCount}.`;
+        refs.appointmentOverlapWarning.classList.remove("is-hidden");
+    }
+
+    function updateAppointmentHistoryPanel() {
+        const customer = resolveCustomerFromInput(refs.appointmentForm.elements.customerId.value, refs.appointmentCustomerName.value);
+        if (!customer) {
+            refs.appointmentHistoryPanel.classList.add("is-hidden");
+            refs.appointmentHistoryList.innerHTML = "";
+            return;
+        }
+
+        const historyItems = getAppointmentHistoryForForm(customer);
+        refs.appointmentHistoryList.innerHTML = historyItems.length
+            ? historyItems.map((appointment) => {
+                return `
+                    <div class="history-item">
+                        <div class="history-date">${escapeHtml(formatDateForHeading(appointment.date))}</div>
+                        <div class="history-meta">${escapeHtml(`${formatTimeLabel(appointment.time)} - ${appointment.duration} mins`)}</div>
+                        <div class="history-service">${escapeHtml(appointment.serviceName || "Appointment")}</div>
+                    </div>
+                `;
+            }).join("")
+            : `<div class="history-empty">No appointments saved for this customer yet.</div>`;
+        refs.appointmentHistoryPanel.classList.remove("is-hidden");
     }
 
     function saveAppointment(event) {
@@ -1043,7 +1276,8 @@
         const customerName = form.customerName.value.trim();
         const serviceName = form.serviceName.value.trim();
         const date = form.date.value;
-        const time = form.time.value;
+        const time = normalizeSalonTimeValue(form.time.value);
+        form.time.value = time;
         const selectedCustomer = resolveCustomerFromInput(form.customerId.value, customerName);
         const selectedService = resolveServiceFromInput(form.serviceId.value, serviceName);
         const duration = Number(form.duration.value) || (selectedService ? selectedService.duration : 30);
@@ -1052,8 +1286,12 @@
             showAppointmentError("Please add a customer name, a haircut type, or both.");
             return;
         }
-        if (!date || !isWorkingDate(date)) {
+        if (!date || !isWorkingDate(date, state.data)) {
             showAppointmentError("Please choose a Wednesday, Friday, or Saturday.");
+            return;
+        }
+        if (isHolidayDate(date)) {
+            showAppointmentError("That day is blocked as a holiday.");
             return;
         }
         if (!form.appointmentId.value && isDateBeforeToday(date)) {
@@ -1068,8 +1306,25 @@
         const startMinutes = minutesFromTime(time);
         const endMinutes = startMinutes + duration;
         if (startMinutes < HOUR_START * 60 || endMinutes > HOUR_END * 60) {
-            showAppointmentError("Appointments must stay within 7am to 7pm.");
+            showAppointmentError("Appointments must stay within 08:00 and 19:00.");
             return;
+        }
+
+        const overlapMatches = getOverlappingAppointments({
+            id: form.appointmentId.value || "",
+            date,
+            time,
+            duration
+        });
+        if (overlapMatches.length) {
+            const overlapNames = overlapMatches
+                .slice(0, 3)
+                .map((appointment) => `${getAppointmentDisplayName(appointment, getLinkedCustomer(appointment))} at ${formatTimeLabel(appointment.time)}`)
+                .join(", ");
+            const extraWarning = overlapMatches.length > 3 ? ` plus ${overlapMatches.length - 3} more` : "";
+            if (!window.confirm(`Warning: this overlaps with ${overlapNames}${extraWarning}. Save anyway?`)) {
+                return;
+            }
         }
 
         const appointment = {
@@ -1108,6 +1363,7 @@
             name,
             address: form.address.value.trim(),
             phone: form.phone.value.trim(),
+            notes: form.notes.value.trim(),
             colourChartId: colour ? colour.id : "",
             colourLabel
         });
@@ -1161,11 +1417,12 @@
 
     function deleteAppointment() {
         const id = refs.appointmentForm.elements.appointmentId.value;
-        if (!id || !window.confirm("Delete this appointment?")) {
+        if (!id) {
             return;
         }
-        state.data.appointments = state.data.appointments.filter((item) => item.id !== id);
-        persistAndRender();
+        if (!deleteAppointmentById(id)) {
+            return;
+        }
         closeSheet();
     }
 
@@ -1217,6 +1474,34 @@
             return;
         }
         state.data.colourCharts = state.data.colourCharts.filter((item) => item.id !== id);
+        persistAndRender();
+    }
+
+    function deleteAppointmentById(id) {
+        if (!window.confirm("Delete this appointment?")) {
+            return false;
+        }
+        state.data.appointments = state.data.appointments.filter((item) => item.id !== id);
+        persistAndRender();
+        return true;
+    }
+
+    function addHolidayDate(dateString) {
+        if (!isWorkingDate(dateString, state.data)) {
+            return;
+        }
+        if (isHolidayDate(dateString)) {
+            return;
+        }
+        state.data.holidays = sortUniqueHolidayDates([...state.data.holidays, dateString]);
+        if (state.selectedDate === dateString) {
+            state.selectedDate = getNextWorkingDate(addDays(parseLocalDate(dateString), 1), state.data);
+        }
+        persistAndRender();
+    }
+
+    function removeHolidayDate(dateString) {
+        state.data.holidays = state.data.holidays.filter((item) => item !== dateString);
         persistAndRender();
     }
 
@@ -1281,7 +1566,8 @@
             appointments: Array.isArray(source.appointments) ? source.appointments.map(sanitizeAppointment).filter(Boolean) : [],
             customers: Array.isArray(source.customers) ? source.customers.map(sanitizeCustomer).filter(Boolean) : [],
             services: Array.isArray(source.services) ? source.services.map(sanitizeService).filter(Boolean) : DEFAULT_DATA.services.map((item) => ({ ...item })),
-            colourCharts: Array.isArray(source.colourCharts) ? source.colourCharts.map(sanitizeColour).filter(Boolean) : []
+            colourCharts: Array.isArray(source.colourCharts) ? source.colourCharts.map(sanitizeColour).filter(Boolean) : [],
+            holidays: Array.isArray(source.holidays) ? sortUniqueHolidayDates(source.holidays.map(sanitizeHoliday).filter(Boolean)) : DEFAULT_DATA.holidays.slice()
         };
     }
 
@@ -1310,9 +1596,45 @@
             name: String(item.name),
             address: String(item.address || ""),
             phone: String(item.phone || ""),
+            notes: String(item.notes || ""),
             colourChartId: String(item.colourChartId || ""),
             colourLabel: String(item.colourLabel || "")
         };
+    }
+
+    function getAppointmentsForCustomer(customer) {
+        return [...state.data.appointments]
+            .filter((appointment) => {
+                if (appointment.customerId && appointment.customerId === customer.id) {
+                    return true;
+                }
+                if (!appointment.customerId && appointment.customerName) {
+                    return normalize(appointment.customerName) === normalize(customer.name);
+                }
+                return false;
+            })
+            .sort((left, right) => {
+                if (left.date === right.date) {
+                    return right.time.localeCompare(left.time);
+                }
+                return right.date.localeCompare(left.date);
+            });
+    }
+
+    function renderCustomerBookingsHtml(bookings) {
+        if (!bookings.length) {
+            return `<div class="history-empty">No bookings saved for this customer yet.</div>`;
+        }
+
+        return bookings.map((appointment) => {
+            return `
+                <div class="history-item">
+                    <div class="history-date">${escapeHtml(formatDateForHeading(appointment.date))}</div>
+                    <div class="history-meta">${escapeHtml(`${formatTimeLabel(appointment.time)} - ${appointment.duration} mins`)}</div>
+                    <div class="history-service">${escapeHtml(appointment.serviceName || "Appointment")}</div>
+                </div>
+            `;
+        }).join("");
     }
 
     function sanitizeService(item) {
@@ -1335,6 +1657,103 @@
             name: String(item.name),
             number: String(item.number)
         };
+    }
+
+    function sanitizeHoliday(value) {
+        if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+            return null;
+        }
+        return value;
+    }
+
+    function getDraftAppointmentFromForm() {
+        const form = refs.appointmentForm.elements;
+        const date = form.date.value;
+        const time = normalizeSalonTimeValue(form.time.value);
+        if (!date || !time) {
+            return null;
+        }
+
+        const selectedService = resolveServiceFromInput(form.serviceId.value, form.serviceName.value || "");
+        return {
+            id: form.appointmentId.value || "",
+            date,
+            time,
+            duration: Number(form.duration.value) || (selectedService ? selectedService.duration : 30)
+        };
+    }
+
+    function getAppointmentHistoryForForm(customer) {
+        const selectedCustomer = customer || resolveCustomerFromInput(refs.appointmentForm.elements.customerId.value, refs.appointmentCustomerName.value || "");
+        if (!selectedCustomer) {
+            return [];
+        }
+        return getAppointmentsForCustomer(selectedCustomer)
+            .slice(0, 50);
+    }
+
+    function getOverlappingAppointments(draft) {
+        const draftStart = minutesFromTime(draft.time);
+        const draftEnd = draftStart + draft.duration;
+
+        return state.data.appointments
+            .filter((appointment) => appointment.date === draft.date && appointment.id !== draft.id)
+            .filter((appointment) => {
+                const appointmentStart = minutesFromTime(appointment.time);
+                const appointmentEnd = appointmentStart + appointment.duration;
+                return draftStart < appointmentEnd && appointmentStart < draftEnd;
+            })
+            .sort((left, right) => left.time.localeCompare(right.time));
+    }
+
+    function getAppointmentLayout(appointments) {
+        const enriched = appointments.map((appointment) => ({
+            appointment,
+            startMinutes: minutesFromTime(appointment.time),
+            endMinutes: minutesFromTime(appointment.time) + appointment.duration,
+            lane: 0,
+            laneCount: 1,
+            colourIndex: 0
+        }));
+
+        const clusters = [];
+        enriched.forEach((item) => {
+            const activeCluster = clusters[clusters.length - 1];
+            if (!activeCluster || item.startMinutes >= activeCluster.endMinutes) {
+                clusters.push({ items: [item], endMinutes: item.endMinutes });
+                return;
+            }
+
+            activeCluster.items.push(item);
+            activeCluster.endMinutes = Math.max(activeCluster.endMinutes, item.endMinutes);
+        });
+
+        clusters.forEach((cluster) => {
+            const laneEnds = [];
+            cluster.items.forEach((item, itemIndex) => {
+                let laneIndex = laneEnds.findIndex((laneEnd) => laneEnd <= item.startMinutes);
+                if (laneIndex === -1) {
+                    laneIndex = laneEnds.length;
+                }
+                laneEnds[laneIndex] = item.endMinutes;
+                item.lane = laneIndex;
+                item.laneCount = laneEnds.length;
+                item.colourIndex = laneIndex % APPOINTMENT_COLOURS.length;
+                if (laneEnds.length === 1) {
+                    item.colourIndex = itemIndex % APPOINTMENT_COLOURS.length;
+                }
+            });
+
+            const finalLaneCount = laneEnds.length;
+            cluster.items.forEach((item) => {
+                item.laneCount = finalLaneCount;
+                if (finalLaneCount === 1) {
+                    item.colourIndex = 0;
+                }
+            });
+        });
+
+        return enriched;
     }
 
     function getAppointmentsForDate(date) {
@@ -1485,24 +1904,33 @@
         return timeFromMinutes(Math.max(nextStart, HOUR_START * 60));
     }
 
-    function getNextWorkingDate(date) {
+    function getNextWorkingDate(date, sourceData) {
         let current = parseDateInput(date);
-        while (!WORKING_DAY_SET.has(current.getDay())) {
+        while (!isWorkingDate(toIsoDate(current), sourceData)) {
             current = addDays(current, 1);
         }
         return toIsoDate(current);
     }
 
-    function getPreviousWorkingDate(date) {
+    function getPreviousWorkingDate(date, sourceData) {
         let current = parseDateInput(date);
-        while (!WORKING_DAY_SET.has(current.getDay())) {
+        while (!isWorkingDate(toIsoDate(current), sourceData)) {
             current = addDays(current, -1);
         }
         return toIsoDate(current);
     }
 
-    function isWorkingDate(dateString) {
-        return WORKING_DAY_SET.has(parseLocalDate(dateString).getDay());
+    function isWorkingDate(dateString, sourceData) {
+        return WORKING_DAY_SET.has(parseLocalDate(dateString).getDay()) && !isHolidayDate(dateString, sourceData);
+    }
+
+    function isHolidayDate(dateString, sourceData) {
+        const holidays = sourceData?.holidays || state.data.holidays;
+        return holidays.includes(dateString);
+    }
+
+    function sortUniqueHolidayDates(holidayDates) {
+        return Array.from(new Set(holidayDates)).sort((left, right) => left.localeCompare(right));
     }
 
     function getTodayIsoDate() {
@@ -1531,16 +1959,11 @@
     }
 
     function formatHourLabel(hour) {
-        const suffix = hour >= 12 ? "pm" : "am";
-        const hour12 = hour % 12 || 12;
-        return `${hour12}${suffix}`;
+        return `${String(hour).padStart(2, "0")}:00`;
     }
 
     function formatTimeLabel(time) {
-        const [hours, minutes] = time.split(":").map(Number);
-        const suffix = hours >= 12 ? "pm" : "am";
-        const hour12 = hours % 12 || 12;
-        return `${hour12}:${String(minutes).padStart(2, "0")}${suffix}`;
+        return timeFromMinutes(minutesFromTime(time));
     }
 
     function formatDuration(totalMinutes) {
