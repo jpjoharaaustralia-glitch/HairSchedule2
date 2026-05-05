@@ -7,6 +7,7 @@
     const HOUR_END = 19;
     const TOTAL_MINUTES = (HOUR_END - HOUR_START) * 60;
     const MINUTE_HEIGHT = 4.8;
+    const REMOTE_REFRESH_INTERVAL = 8000;
     const APPOINTMENT_COLOURS = [
         { start: "rgba(132, 81, 92, 0.98)", end: "rgba(88, 50, 63, 0.98)", shadow: "rgba(71, 36, 43, 0.2)" },
         { start: "rgba(199, 102, 85, 0.98)", end: "rgba(143, 67, 55, 0.98)", shadow: "rgba(118, 48, 36, 0.18)" },
@@ -17,6 +18,8 @@
     let supabaseClient = null;
     let authSubscription = null;
     let remoteSaveTimer = null;
+    let remoteRefreshTimer = null;
+    let remoteChangeChannel = null;
 
     const DEFAULT_DATA = {
         appointments: [],
@@ -71,6 +74,7 @@
         colourSheet: document.getElementById("colourSheet"),
         datePickerSheet: document.getElementById("datePickerSheet"),
         authSheet: document.getElementById("authSheet"),
+        authSheetCloseButton: document.querySelector('[data-close-sheet="authSheet"]'),
         closeSheetButtons: Array.from(document.querySelectorAll("[data-close-sheet]")),
         appointmentSheetTitle: document.getElementById("appointmentSheetTitle"),
         appointmentForm: document.getElementById("appointmentForm"),
@@ -80,6 +84,8 @@
         appointmentServiceMeta: document.getElementById("appointmentServiceMeta"),
         appointmentDateTrigger: document.getElementById("appointmentDateTrigger"),
         appointmentDateValue: document.getElementById("appointmentDateValue"),
+        appointmentHour: document.getElementById("appointmentHour"),
+        appointmentMinute: document.getElementById("appointmentMinute"),
         appointmentTime: document.getElementById("appointmentTime"),
         appointmentDuration: document.getElementById("appointmentDuration"),
         appointmentOverlapWarning: document.getElementById("appointmentOverlapWarning"),
@@ -106,6 +112,7 @@
         authForm: document.getElementById("authForm"),
         authEmail: document.getElementById("authEmail"),
         authPassword: document.getElementById("authPassword"),
+        authFormNote: document.getElementById("authFormNote"),
         authFormError: document.getElementById("authFormError"),
         calendarPrevBtn: document.getElementById("calendarPrevBtn"),
         calendarNextBtn: document.getElementById("calendarNextBtn"),
@@ -129,7 +136,9 @@
         session: null,
         syncStatus: "offline",
         lastSyncedUserId: "",
-        isHydratingRemote: false
+        lastRemoteUpdatedAt: "",
+        isHydratingRemote: false,
+        authGateRequired: false
     };
 
     initialize();
@@ -212,9 +221,8 @@
             updateAppointmentOverlapWarning();
             updateAppointmentHistoryPanel();
         });
-        refs.appointmentTime.addEventListener("input", refreshAppointmentTimeState);
-        refs.appointmentTime.addEventListener("change", () => refreshAppointmentTimeState(true));
-        refs.appointmentTime.addEventListener("blur", () => refreshAppointmentTimeState(true));
+        refs.appointmentHour.addEventListener("change", () => refreshAppointmentTimeState(true));
+        refs.appointmentMinute.addEventListener("change", () => refreshAppointmentTimeState(true));
         refs.appointmentForm.addEventListener("submit", saveAppointment);
         refs.deleteAppointmentBtn.addEventListener("click", deleteAppointment);
 
@@ -230,6 +238,13 @@
         refs.deleteColourBtn.addEventListener("click", deleteColour);
 
         refs.authForm.addEventListener("submit", signInToSalon);
+        window.addEventListener("focus", () => void refreshRemoteDataIfNeeded());
+        window.addEventListener("online", () => void refreshRemoteDataIfNeeded());
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") {
+                void refreshRemoteDataIfNeeded();
+            }
+        });
 
         refs.calendarPrevBtn.addEventListener("click", () => {
             state.calendarMonth = startOfMonth(addMonths(state.calendarMonth, -1));
@@ -298,7 +313,7 @@
         if (state.syncStatus === "syncing") {
             setSaveStatus("Online syncing");
         } else if (state.syncStatus === "online") {
-            setSaveStatus("Online save connected");
+            setSaveStatus("Shared planner live");
         } else if (state.syncStatus === "error") {
             setSaveStatus("Online save error");
         } else {
@@ -311,11 +326,11 @@
         }
 
         if (connected) {
-            refs.authStatusText.textContent = `Connected as ${state.session.user.email}. Use this same login on every phone.`;
+            refs.authStatusText.textContent = `Connected as ${state.session.user.email}. Changes from other devices refresh automatically.`;
             return;
         }
 
-        refs.authStatusText.textContent = "Not connected yet. Sign in once on each phone to share the same planner.";
+        refs.authStatusText.textContent = "Not connected yet. Sign in once on each device to open the shared planner.";
     }
 
     function renderSchedule() {
@@ -376,7 +391,8 @@
                 const appointment = layout.appointment;
                 const customer = getLinkedCustomer(appointment);
                 const top = (layout.startMinutes - HOUR_START * 60) * MINUTE_HEIGHT;
-                const height = Math.max(appointment.duration * MINUTE_HEIGHT, 72);
+                const naturalHeight = appointment.duration * MINUTE_HEIGHT;
+                const height = Math.max(naturalHeight, 36);
                 const phone = customer ? customer.phone : "";
                 const colour = customer ? resolveCustomerColourLabel(customer) : "";
                 const metaParts = [phone ? `Phone: ${phone}` : "", colour ? `Colour: ${colour}` : ""].filter(Boolean);
@@ -389,6 +405,12 @@
                 }
                 if (layout.laneCount > 1) {
                     card.classList.add("is-overlapping");
+                }
+                if (naturalHeight < 110) {
+                    card.classList.add("is-compact");
+                }
+                if (naturalHeight < 62) {
+                    card.classList.add("is-mini");
                 }
 
                 const horizontalInset = layout.laneCount > 1 ? { left: 10, right: 14, gap: 8 } : { left: 14, right: 28, gap: 0 };
@@ -675,18 +697,23 @@
     async function handleSessionChange(session) {
         state.session = session || null;
         state.lastSyncedUserId = "";
+        state.lastRemoteUpdatedAt = "";
         renderSyncUi();
+        stopRemoteSyncListeners();
 
         if (!state.session?.user?.id) {
             state.syncStatus = "offline";
             renderSyncUi();
+            requireAuthGate();
             return;
         }
 
+        dismissAuthGate();
         await loadRemoteData();
+        startRemoteSyncListeners();
     }
 
-    async function loadRemoteData() {
+    async function loadRemoteData(options = {}) {
         if (!state.session?.user?.id || state.isHydratingRemote) {
             return;
         }
@@ -696,9 +723,12 @@
             return;
         }
 
+        const isBackgroundRefresh = Boolean(options.background);
         state.isHydratingRemote = true;
-        state.syncStatus = "syncing";
-        renderSyncUi("Loading the shared planner...");
+        if (!isBackgroundRefresh) {
+            state.syncStatus = "syncing";
+            renderSyncUi("Loading the shared planner...");
+        }
 
         let data;
         let error;
@@ -725,14 +755,21 @@
 
         if (data?.payload) {
             state.data = sanitizeData(data.payload);
+            state.lastRemoteUpdatedAt = String(data.updated_at || "");
             saveData({ skipRemote: true });
             renderApp();
             state.syncStatus = "online";
             state.lastSyncedUserId = state.session.user.id;
-            renderSyncUi("Shared planner loaded and ready.");
+            renderSyncUi(isBackgroundRefresh ? "Shared changes loaded automatically." : "Shared planner loaded and ready.");
             return;
         }
 
+        state.lastRemoteUpdatedAt = "";
+        if (isBackgroundRefresh) {
+            state.syncStatus = "online";
+            renderSyncUi();
+            return;
+        }
         await saveRemoteData(true);
     }
 
@@ -753,9 +790,10 @@
         state.syncStatus = "syncing";
         renderSyncUi(isFirstSave ? "Creating the shared planner..." : "Saving to the shared planner...");
 
+        let data;
         let error;
         try {
-            ({ error } = await client
+            ({ data, error } = await client
                 .from("salon_planner_state")
                 .upsert(
                     {
@@ -763,7 +801,9 @@
                         payload: state.data
                     },
                     { onConflict: "owner_user_id" }
-                ));
+                )
+                .select("updated_at")
+                .single());
         } catch (caughtError) {
             state.syncStatus = "error";
             renderSyncUi(getFriendlySyncError(caughtError));
@@ -778,6 +818,7 @@
 
         state.syncStatus = "online";
         state.lastSyncedUserId = state.session.user.id;
+        state.lastRemoteUpdatedAt = String(data?.updated_at || state.lastRemoteUpdatedAt || "");
         renderSyncUi(isFirstSave ? "Shared planner created." : "Shared planner saved.");
     }
 
@@ -794,8 +835,109 @@
         }, 500);
     }
 
+    function startRemoteSyncListeners() {
+        stopRemoteSyncListeners();
+        if (!state.session?.user?.id) {
+            return;
+        }
+
+        remoteRefreshTimer = window.setInterval(() => {
+            void refreshRemoteDataIfNeeded();
+        }, REMOTE_REFRESH_INTERVAL);
+
+        const client = getSupabaseClient();
+        if (!client) {
+            return;
+        }
+
+        remoteChangeChannel = client
+            .channel(`salon-planner-${state.session.user.id}`)
+            .on(
+                "postgres_changes",
+                {
+                    event: "*",
+                    schema: "public",
+                    table: "salon_planner_state",
+                    filter: `owner_user_id=eq.${state.session.user.id}`
+                },
+                (payload) => {
+                    const nextUpdatedAt = String(payload.new?.updated_at || "");
+                    if (nextUpdatedAt && nextUpdatedAt === state.lastRemoteUpdatedAt) {
+                        return;
+                    }
+                    void loadRemoteData({ background: true });
+                }
+            )
+            .subscribe();
+    }
+
+    function stopRemoteSyncListeners() {
+        window.clearInterval(remoteRefreshTimer);
+        remoteRefreshTimer = null;
+
+        const client = getSupabaseClient();
+        if (client && remoteChangeChannel) {
+            client.removeChannel(remoteChangeChannel);
+        }
+        remoteChangeChannel = null;
+    }
+
+    async function refreshRemoteDataIfNeeded() {
+        if (!state.session?.user?.id || state.isHydratingRemote) {
+            return;
+        }
+
+        const client = getSupabaseClient();
+        if (!client) {
+            return;
+        }
+
+        let data;
+        let error;
+        try {
+            ({ data, error } = await client
+                .from("salon_planner_state")
+                .select("updated_at")
+                .eq("owner_user_id", state.session.user.id)
+                .maybeSingle());
+        } catch (_caughtError) {
+            return;
+        }
+
+        if (error || !data?.updated_at) {
+            return;
+        }
+
+        if (!state.lastRemoteUpdatedAt || data.updated_at !== state.lastRemoteUpdatedAt) {
+            await loadRemoteData({ background: true });
+        }
+    }
+
+    function requireAuthGate() {
+        state.authGateRequired = true;
+        refs.authSheet.classList.add("is-auth-gate");
+        refs.authFormNote.textContent = "Sign in once on each phone, tablet, and laptop to open the shared planner. Once signed in, each device will stay logged in.";
+        clearFormError(refs.authFormError);
+        refs.authPassword.value = "";
+        if (!state.session?.user?.email) {
+            refs.authEmail.value = "";
+        }
+        openSheet("authSheet");
+    }
+
+    function dismissAuthGate() {
+        const wasRequired = state.authGateRequired;
+        state.authGateRequired = false;
+        refs.authSheet.classList.remove("is-auth-gate");
+        refs.authFormNote.textContent = "Use the same salon email and password on every phone so the planner stays shared. Once signed in, this device will stay logged in.";
+        if (wasRequired && state.activeSheet === "authSheet") {
+            closeSheet("authSheet");
+        }
+    }
+
     function openAuthSheet() {
         closeDrawer();
+        dismissAuthGate();
         clearFormError(refs.authFormError);
         refs.authPassword.value = "";
         if (state.session?.user?.email) {
@@ -852,6 +994,8 @@
             return;
         }
 
+        stopRemoteSyncListeners();
+        state.lastRemoteUpdatedAt = "";
         await client.auth.signOut();
         state.syncStatus = "offline";
         renderSyncUi("Signed out. Local backup still stays on this phone.");
@@ -899,12 +1043,12 @@
             refs.appointmentServiceName.value = appointment.serviceName || "";
             refs.appointmentDateValue.value = appointment.date;
             refs.appointmentDateTrigger.textContent = formatDateForHeading(appointment.date);
-            refs.appointmentTime.value = appointment.time;
+            setAppointmentTimeSelectors(appointment.time);
             refs.appointmentDuration.value = appointment.duration || "";
             refs.deleteAppointmentBtn.classList.remove("is-hidden");
         } else {
             refs.appointmentSheetTitle.textContent = "Add appointment";
-            refs.appointmentTime.value = getSuggestedTimeForDate(state.selectedDate);
+            setAppointmentTimeSelectors(getSuggestedTimeForDate(defaultAppointmentDate));
         }
 
         syncAppointmentCustomerFromInput();
@@ -1004,6 +1148,9 @@
     }
 
     function closeSheet() {
+        if (state.authGateRequired && state.activeSheet === "authSheet") {
+            return;
+        }
         state.activeSheet = null;
         state.datePickerReturnSheet = null;
         refs.sheetBackdrop.classList.add("is-hidden");
@@ -1172,12 +1319,11 @@
 
     function syncAppointmentTimeBounds() {
         const selectedService = resolveServiceFromInput(refs.appointmentForm.elements.serviceId.value, refs.appointmentServiceName.value);
-        const duration = Math.max(Number(refs.appointmentDuration.value) || (selectedService ? selectedService.duration : 30), 15);
-        const latestStart = HOUR_END * 60 - duration;
-        refs.appointmentTime.min = "08:00";
-        refs.appointmentTime.max = timeFromMinutes(Math.max(latestStart, HOUR_START * 60));
-        if (refs.appointmentTime.value && minutesFromTime(refs.appointmentTime.value) > latestStart) {
-            refs.appointmentTime.value = timeFromMinutes(Math.max(latestStart, HOUR_START * 60));
+        const duration = Math.max(Math.round(Number(refs.appointmentDuration.value) || (selectedService ? selectedService.duration : 30)), 1);
+        const latestStart = Math.max(roundMinutesDown(HOUR_END * 60 - duration, 5), HOUR_START * 60);
+        const currentTime = normalizeAppointmentTimeInput();
+        if (currentTime && minutesFromTime(currentTime) > latestStart) {
+            setAppointmentTimeSelectors(timeFromMinutes(latestStart));
         }
         updateAppointmentOverlapWarning();
     }
@@ -1193,20 +1339,75 @@
     }
 
     function normalizeAppointmentTimeInput() {
-        const next = normalizeSalonTimeValue(refs.appointmentTime.value);
-        if (next && refs.appointmentTime.value !== next) {
+        const next = getAppointmentTimeFromSelectors();
+        if (next) {
             refs.appointmentTime.value = next;
         }
+        return next;
+    }
+
+    function setAppointmentTimeSelectors(value) {
+        const normalized = normalizeSalonTimeValue(value);
+        const safeTime = normalized || "09:00";
+        const [hours, minutes] = safeTime.split(":").map(Number);
+        refs.appointmentHour.value = formatSalonHourValue(hours);
+        refs.appointmentMinute.value = String(minutes).padStart(2, "0");
+        refs.appointmentTime.value = safeTime;
+    }
+
+    function getAppointmentTimeFromSelectors() {
+        const hourValue = refs.appointmentHour.value;
+        const minuteValue = refs.appointmentMinute.value;
+        if (!hourValue || !minuteValue) {
+            return "";
+        }
+
+        const convertedHour = convertSalonHourToTwentyFourHour(hourValue);
+        if (convertedHour === null) {
+            return "";
+        }
+
+        const minutes = Number(minuteValue);
+        if (!Number.isFinite(minutes)) {
+            return "";
+        }
+
+        return normalizeSalonTimeValue(`${String(convertedHour).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`);
+    }
+
+    function convertSalonHourToTwentyFourHour(hourValue) {
+        const parsedHour = Number(hourValue);
+        if (!Number.isFinite(parsedHour)) {
+            return null;
+        }
+        if (parsedHour >= HOUR_START && parsedHour <= 12) {
+            return parsedHour;
+        }
+        if (parsedHour >= 1 && parsedHour <= (HOUR_END - 12)) {
+            return parsedHour + 12;
+        }
+        return null;
+    }
+
+    function formatSalonHourValue(hourValue) {
+        const parsedHour = Number(hourValue);
+        if (!Number.isFinite(parsedHour)) {
+            return "9";
+        }
+        if (parsedHour > 12) {
+            return String(parsedHour - 12);
+        }
+        return String(parsedHour);
     }
 
     function normalizeSalonTimeValue(value) {
         if (!/^\d{1,2}:\d{2}$/.test(String(value || ""))) {
-            return value;
+            return "";
         }
 
         let [hours, minutes] = String(value).split(":").map(Number);
         if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
-            return value;
+            return "";
         }
 
         if (hours > 0 && hours < HOUR_START) {
@@ -1276,11 +1477,11 @@
         const customerName = form.customerName.value.trim();
         const serviceName = form.serviceName.value.trim();
         const date = form.date.value;
-        const time = normalizeSalonTimeValue(form.time.value);
+        const time = normalizeAppointmentTimeInput() || normalizeSalonTimeValue(form.time.value);
         form.time.value = time;
         const selectedCustomer = resolveCustomerFromInput(form.customerId.value, customerName);
         const selectedService = resolveServiceFromInput(form.serviceId.value, serviceName);
-        const duration = Number(form.duration.value) || (selectedService ? selectedService.duration : 30);
+        const duration = Math.max(Math.round(Number(form.duration.value) || (selectedService ? selectedService.duration : 30)), 1);
 
         if (!customerName && !serviceName) {
             showAppointmentError("Please add a customer name, a haircut type, or both.");
@@ -1583,7 +1784,7 @@
             serviceName: String(item.serviceName || ""),
             date: String(item.date),
             time: String(item.time),
-            duration: Math.max(Number(item.duration) || 30, 15)
+            duration: Math.max(Math.round(Number(item.duration) || 30), 1)
         };
     }
 
@@ -1669,7 +1870,7 @@
     function getDraftAppointmentFromForm() {
         const form = refs.appointmentForm.elements;
         const date = form.date.value;
-        const time = normalizeSalonTimeValue(form.time.value);
+        const time = normalizeAppointmentTimeInput() || normalizeSalonTimeValue(form.time.value);
         if (!date || !time) {
             return null;
         }
@@ -1679,7 +1880,7 @@
             id: form.appointmentId.value || "",
             date,
             time,
-            duration: Number(form.duration.value) || (selectedService ? selectedService.duration : 30)
+            duration: Math.max(Math.round(Number(form.duration.value) || (selectedService ? selectedService.duration : 30)), 1)
         };
     }
 
@@ -1900,8 +2101,22 @@
             return "09:00";
         }
         const latest = items[items.length - 1];
-        const nextStart = Math.min(minutesFromTime(latest.time) + latest.duration, HOUR_END * 60 - 30);
+        const nextStart = Math.min(roundMinutesUp(minutesFromTime(latest.time) + latest.duration, 5), HOUR_END * 60 - 30);
         return timeFromMinutes(Math.max(nextStart, HOUR_START * 60));
+    }
+
+    function roundMinutesUp(totalMinutes, increment) {
+        if (!Number.isFinite(totalMinutes) || !Number.isFinite(increment) || increment <= 0) {
+            return totalMinutes;
+        }
+        return Math.ceil(totalMinutes / increment) * increment;
+    }
+
+    function roundMinutesDown(totalMinutes, increment) {
+        if (!Number.isFinite(totalMinutes) || !Number.isFinite(increment) || increment <= 0) {
+            return totalMinutes;
+        }
+        return Math.floor(totalMinutes / increment) * increment;
     }
 
     function getNextWorkingDate(date, sourceData) {

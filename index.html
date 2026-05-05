@@ -31,7 +31,7 @@
 
             <section class="drawer-panel">
                 <h3>Online save</h3>
-                <p id="authStatusText">Not connected yet. Sign in once on each phone to share the same planner.</p>
+                <p id="authStatusText">Not connected yet. Sign in once on each device to open the shared planner.</p>
                 <button class="secondary-action" type="button" id="openAuthBtn">Salon login</button>
                 <button class="secondary-action is-hidden" type="button" id="syncNowBtn">Sync now</button>
                 <button class="secondary-action is-hidden" type="button" id="logoutBtn">Log out</button>
@@ -182,14 +182,51 @@
                     <input id="appointmentDateValue" name="date" type="hidden">
                 </label>
 
-                <label class="field">
+                <div class="field">
                     <span>Time</span>
-                    <input id="appointmentTime" name="time" type="time" min="08:00" max="19:00" step="300" required>
-                </label>
+                    <div class="time-picker-grid">
+                        <div class="mini-field">
+                            <span>Hour</span>
+                            <select id="appointmentHour" name="timeHour" required>
+                                <option value="8">8</option>
+                                <option value="9">9</option>
+                                <option value="10">10</option>
+                                <option value="11">11</option>
+                                <option value="12">12</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3">3</option>
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                                <option value="6">6</option>
+                                <option value="7">7</option>
+                            </select>
+                        </div>
+                        <div class="mini-field">
+                            <span>Minute</span>
+                            <select id="appointmentMinute" name="timeMinute" required>
+                                <option value="00">00</option>
+                                <option value="05">05</option>
+                                <option value="10">10</option>
+                                <option value="15">15</option>
+                                <option value="20">20</option>
+                                <option value="25">25</option>
+                                <option value="30">30</option>
+                                <option value="35">35</option>
+                                <option value="40">40</option>
+                                <option value="45">45</option>
+                                <option value="50">50</option>
+                                <option value="55">55</option>
+                            </select>
+                        </div>
+                    </div>
+                    <input id="appointmentTime" name="time" type="hidden">
+                    <div class="helper-card">Choose the hour and minute only. Times from 1 to 7 save as the afternoon salon hours automatically.</div>
+                </div>
 
                 <label class="field">
                     <span>Duration in minutes</span>
-                    <input id="appointmentDuration" name="duration" type="number" min="15" max="720" step="15" inputmode="numeric" placeholder="30">
+                    <input id="appointmentDuration" name="duration" type="number" min="1" max="660" step="1" inputmode="numeric" placeholder="30">
                 </label>
 
                 <div class="helper-card helper-warning is-hidden" id="appointmentOverlapWarning"></div>
@@ -354,7 +391,7 @@
             </div>
 
             <form class="sheet-form" id="authForm">
-                <p class="form-note">Use the same salon email and password on every phone so the planner stays shared.</p>
+                <p class="form-note" id="authFormNote">Use the same salon email and password on every phone so the planner stays shared. Once signed in, this device will stay logged in.</p>
 
                 <label class="field">
                     <span>Email</span>

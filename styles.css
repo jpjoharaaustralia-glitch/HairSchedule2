@@ -37,6 +37,7 @@ body {
 
 button,
 input,
+select,
 textarea {
     font: inherit;
 }
@@ -50,6 +51,7 @@ button {
 }
 
 input,
+select,
 textarea {
     width: 100%;
     border: 1px solid rgba(112, 77, 71, 0.18);
@@ -66,6 +68,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
     outline: 2px solid rgba(199, 102, 85, 0.22);
     border-color: rgba(199, 102, 85, 0.55);
@@ -435,6 +438,16 @@ body.is-locked {
     gap: 6px;
 }
 
+.appointment-card.is-compact {
+    padding: 10px;
+    gap: 6px;
+}
+
+.appointment-card.is-mini {
+    padding: 8px 10px;
+    gap: 4px;
+}
+
 .appointment-time {
     font-size: 0.72rem;
     font-weight: 800;
@@ -453,6 +466,15 @@ body.is-locked {
     font-size: 0.88rem;
 }
 
+.appointment-card.is-compact .appointment-title {
+    font-size: 0.88rem;
+}
+
+.appointment-card.is-mini .appointment-title {
+    font-size: 0.8rem;
+    line-height: 1.05;
+}
+
 .appointment-service {
     font-size: 0.78rem;
     font-weight: 700;
@@ -469,6 +491,21 @@ body.is-locked {
 .appointment-card.is-overlapping .appointment-service,
 .appointment-card.is-overlapping .appointment-meta {
     font-size: 0.72rem;
+}
+
+.appointment-card.is-compact .appointment-time,
+.appointment-card.is-compact .appointment-service,
+.appointment-card.is-compact .appointment-meta {
+    font-size: 0.72rem;
+}
+
+.appointment-card.is-mini .appointment-time {
+    font-size: 0.68rem;
+}
+
+.appointment-card.is-mini .appointment-service,
+.appointment-card.is-mini .appointment-meta {
+    display: none;
 }
 
 .empty-card,
@@ -784,6 +821,15 @@ body.is-locked {
     overscroll-behavior: contain;
 }
 
+.sheet.is-auth-gate .sheet-handle,
+.sheet.is-auth-gate [data-close-sheet="authSheet"] {
+    display: none;
+}
+
+.sheet.is-auth-gate {
+    padding-top: calc(28px + env(safe-area-inset-top));
+}
+
 .sheet-handle {
     width: 54px;
     height: 6px;
@@ -824,6 +870,25 @@ body.is-locked {
 
 .field > span {
     font-size: 0.82rem;
+    font-weight: 800;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+}
+
+.time-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.mini-field {
+    display: grid;
+    gap: 8px;
+}
+
+.mini-field > span {
+    font-size: 0.72rem;
     font-weight: 800;
     color: var(--muted);
     text-transform: uppercase;
