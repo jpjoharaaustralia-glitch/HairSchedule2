@@ -909,6 +909,31 @@ body.is-locked {
     color: #77511a;
 }
 
+.helper-detail-stack {
+    display: grid;
+    gap: 8px;
+}
+
+.helper-detail-row {
+    display: grid;
+    gap: 2px;
+}
+
+.helper-detail-label {
+    font-size: 0.68rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+}
+
+.helper-detail-value {
+    font-size: 0.92rem;
+    color: var(--text);
+    line-height: 1.35;
+    font-weight: 700;
+}
+
 .picker-button {
     width: 100%;
 }

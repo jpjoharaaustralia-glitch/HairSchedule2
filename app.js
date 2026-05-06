@@ -138,7 +138,8 @@
         lastSyncedUserId: "",
         lastRemoteUpdatedAt: "",
         isHydratingRemote: false,
-        authGateRequired: false
+        authGateRequired: false,
+        lastAutoScrolledDate: ""
     };
 
     initialize();
@@ -271,6 +272,9 @@
         refs.drawerLinks.forEach((button) => {
             button.classList.toggle("is-active", button.dataset.section === state.section);
         });
+        if (state.section !== "appointments") {
+            state.lastAutoScrolledDate = "";
+        }
     }
 
     async function initializeOnlineSync() {
@@ -342,7 +346,7 @@
         refs.toggleUpdateModeBtn.classList.toggle("is-active", state.updateMode);
         refs.toggleUpdateModeBtn.textContent = state.updateMode ? "Done" : "Update";
         refs.addAppointmentBtn.classList.toggle("is-hidden", state.updateMode);
-        refs.updateModeBanner.textContent = "Tap a booking to update it.";
+        refs.updateModeBanner.textContent = "Tap a booking to view or update it.";
         refs.updateModeBanner.classList.toggle("is-hidden", !state.updateMode);
 
         const items = getAppointmentsForDate(state.selectedDate);
@@ -413,7 +417,7 @@
                     card.classList.add("is-mini");
                 }
 
-                const horizontalInset = layout.laneCount > 1 ? { left: 10, right: 14, gap: 8 } : { left: 14, right: 28, gap: 0 };
+                const horizontalInset = layout.laneCount > 1 ? { left: 86, right: 14, gap: 8 } : { left: 88, right: 22, gap: 0 };
                 if (layout.laneCount > 1) {
                     const totalGap = horizontalInset.gap * (layout.laneCount - 1);
                     card.style.left = `calc(${horizontalInset.left}px + ${layout.lane} * ((100% - ${horizontalInset.left + horizontalInset.right}px - ${totalGap}px) / ${layout.laneCount} + ${horizontalInset.gap}px))`;
@@ -435,9 +439,6 @@
                 `;
 
                 card.addEventListener("click", () => {
-                    if (!state.updateMode) {
-                        return;
-                    }
                     openAppointmentSheet(appointment.id);
                 });
 
@@ -446,6 +447,7 @@
         }
 
         refs.timeGrid.appendChild(layer);
+        maybeAutoScrollSchedule();
     }
 
     function renderCustomers() {
@@ -1035,7 +1037,7 @@
             if (!appointment) {
                 return;
             }
-            refs.appointmentSheetTitle.textContent = "Update";
+            refs.appointmentSheetTitle.textContent = "Appointment details";
             refs.appointmentForm.elements.appointmentId.value = appointment.id;
             refs.appointmentForm.elements.customerId.value = appointment.customerId || "";
             refs.appointmentForm.elements.serviceId.value = appointment.serviceId || "";
@@ -1281,16 +1283,29 @@
         const exactMatch = resolveCustomerFromInput(refs.appointmentForm.elements.customerId.value, refs.appointmentCustomerName.value);
         if (exactMatch) {
             refs.appointmentForm.elements.customerId.value = exactMatch.id;
-            const details = [
-                exactMatch.phone ? `Phone: ${exactMatch.phone}` : "",
-                resolveCustomerColourLabel(exactMatch) ? `Colour: ${resolveCustomerColourLabel(exactMatch)}` : "",
-                exactMatch.address ? `Address: ${exactMatch.address}` : ""
-            ].filter(Boolean).join(" - ");
-            refs.appointmentCustomerMeta.textContent = details || "Saved customer selected.";
+            const colourLabel = resolveCustomerColourLabel(exactMatch);
+            refs.appointmentCustomerMeta.innerHTML = `
+                <div class="helper-detail-stack">
+                    <div class="helper-detail-row">
+                        <div class="helper-detail-label">Name</div>
+                        <div class="helper-detail-value">${escapeHtml(exactMatch.name)}</div>
+                    </div>
+                    <div class="helper-detail-row">
+                        <div class="helper-detail-label">Phone number</div>
+                        <div class="helper-detail-value">${escapeHtml(exactMatch.phone || "No phone number saved")}</div>
+                    </div>
+                    <div class="helper-detail-row">
+                        <div class="helper-detail-label">Hair colour</div>
+                        <div class="helper-detail-value">${escapeHtml(colourLabel || "No hair colour saved")}</div>
+                    </div>
+                </div>
+            `;
             updateAppointmentHistoryPanel();
             return;
         }
-        refs.appointmentCustomerMeta.textContent = refs.appointmentCustomerName.value.trim() ? "This will save as a typed name only." : "No saved customer selected yet.";
+        refs.appointmentCustomerMeta.textContent = refs.appointmentCustomerName.value.trim()
+            ? "This booking is not linked to a saved customer yet."
+            : "No saved customer selected yet.";
         updateAppointmentHistoryPanel();
     }
 
@@ -1459,12 +1474,12 @@
                 return `
                     <div class="history-item">
                         <div class="history-date">${escapeHtml(formatDateForHeading(appointment.date))}</div>
-                        <div class="history-meta">${escapeHtml(`${formatTimeLabel(appointment.time)} - ${appointment.duration} mins`)}</div>
                         <div class="history-service">${escapeHtml(appointment.serviceName || "Appointment")}</div>
+                        <div class="history-meta">${escapeHtml(`${formatTimeLabel(appointment.time)} - ${appointment.duration} mins`)}</div>
                     </div>
                 `;
             }).join("")
-            : `<div class="history-empty">No appointments saved for this customer yet.</div>`;
+            : `<div class="history-empty">No earlier bookings saved for this customer yet.</div>`;
         refs.appointmentHistoryPanel.classList.remove("is-hidden");
     }
 
@@ -1679,7 +1694,7 @@
     }
 
     function deleteAppointmentById(id) {
-        if (!window.confirm("Delete this appointment?")) {
+        if (!window.confirm("Cancel this appointment?")) {
             return false;
         }
         state.data.appointments = state.data.appointments.filter((item) => item.id !== id);
@@ -1889,7 +1904,9 @@
         if (!selectedCustomer) {
             return [];
         }
+        const currentAppointmentId = refs.appointmentForm.elements.appointmentId.value || "";
         return getAppointmentsForCustomer(selectedCustomer)
+            .filter((appointment) => appointment.id !== currentAppointmentId)
             .slice(0, 50);
     }
 
@@ -2195,6 +2212,37 @@
 
     function formatColourChart(colour) {
         return `${colour.name} (${colour.number})`;
+    }
+
+    function maybeAutoScrollSchedule() {
+        const today = getTodayIsoDate();
+        if (state.section !== "appointments" || state.selectedDate !== today) {
+            if (state.selectedDate !== today) {
+                state.lastAutoScrolledDate = "";
+            }
+            return;
+        }
+
+        if (state.lastAutoScrolledDate === today) {
+            return;
+        }
+
+        const now = new Date();
+        const currentMinutes = Math.max(
+            HOUR_START * 60,
+            Math.min((now.getHours() * 60) + now.getMinutes(), HOUR_END * 60)
+        );
+        const scheduleTop = refs.timeGrid.getBoundingClientRect().top + window.scrollY;
+        const scheduleOffset = (currentMinutes - (HOUR_START * 60)) * MINUTE_HEIGHT;
+        const targetTop = Math.max(scheduleTop + scheduleOffset - (window.innerHeight * 0.34), 0);
+
+        state.lastAutoScrolledDate = today;
+        window.requestAnimationFrame(() => {
+            window.scrollTo({
+                top: targetTop,
+                behavior: "smooth"
+            });
+        });
     }
 
     function normalize(value) {
