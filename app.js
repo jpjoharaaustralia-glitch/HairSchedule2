@@ -8,6 +8,7 @@
     const TOTAL_MINUTES = (HOUR_END - HOUR_START) * 60;
     const MINUTE_HEIGHT = 4.8;
     const REMOTE_REFRESH_INTERVAL = 8000;
+    const AUTO_SCROLL_CHECK_INTERVAL = 60000;
     const APPOINTMENT_COLOURS = [
         { start: "rgba(132, 81, 92, 0.98)", end: "rgba(88, 50, 63, 0.98)", shadow: "rgba(71, 36, 43, 0.2)" },
         { start: "rgba(199, 102, 85, 0.98)", end: "rgba(143, 67, 55, 0.98)", shadow: "rgba(118, 48, 36, 0.18)" },
@@ -20,6 +21,7 @@
     let remoteSaveTimer = null;
     let remoteRefreshTimer = null;
     let remoteChangeChannel = null;
+    let autoScrollTimer = null;
 
     const DEFAULT_DATA = {
         appointments: [],
@@ -139,7 +141,7 @@
         lastRemoteUpdatedAt: "",
         isHydratingRemote: false,
         authGateRequired: false,
-        lastAutoScrolledDate: ""
+        lastAutoScrollHourKey: ""
     };
 
     initialize();
@@ -148,6 +150,7 @@
         bindEvents();
         renderApp();
         renderSyncUi();
+        startAutoScrollWatcher();
         void initializeOnlineSync();
     }
 
@@ -368,7 +371,7 @@
 
             const label = document.createElement("div");
             label.className = "time-marker-label";
-            label.textContent = markerMinutes % 15 === 0 ? timeFromMinutes(markerMinutes) : "";
+            label.textContent = markerMinutes % 15 === 0 ? formatTimelineTimeLabel(markerMinutes) : "";
 
             const line = document.createElement("div");
             line.className = "time-marker-line";
@@ -2198,6 +2201,14 @@
         return timeFromMinutes(minutesFromTime(time));
     }
 
+    function formatTimelineTimeLabel(totalMinutes) {
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        const meridiem = hours >= 12 ? "pm" : "am";
+        const twelveHour = hours % 12 || 12;
+        return `${twelveHour}:${String(minutes).padStart(2, "0")}${meridiem}`;
+    }
+
     function formatDuration(totalMinutes) {
         const hours = Math.floor(totalMinutes / 60);
         const minutes = totalMinutes % 60;
@@ -2216,18 +2227,17 @@
 
     function maybeAutoScrollSchedule() {
         const today = getTodayIsoDate();
-        if (state.section !== "appointments" || state.selectedDate !== today) {
-            if (state.selectedDate !== today) {
-                state.lastAutoScrolledDate = "";
-            }
-            return;
-        }
-
-        if (state.lastAutoScrolledDate === today) {
+        if (state.section !== "appointments" || state.selectedDate !== today || !isWorkingDate(today, state.data)) {
+            state.lastAutoScrollHourKey = "";
             return;
         }
 
         const now = new Date();
+        const hourKey = `${today}-${now.getHours()}`;
+        if (state.lastAutoScrollHourKey === hourKey) {
+            return;
+        }
+
         const currentMinutes = Math.max(
             HOUR_START * 60,
             Math.min((now.getHours() * 60) + now.getMinutes(), HOUR_END * 60)
@@ -2236,13 +2246,20 @@
         const scheduleOffset = (currentMinutes - (HOUR_START * 60)) * MINUTE_HEIGHT;
         const targetTop = Math.max(scheduleTop + scheduleOffset - (window.innerHeight * 0.34), 0);
 
-        state.lastAutoScrolledDate = today;
+        state.lastAutoScrollHourKey = hourKey;
         window.requestAnimationFrame(() => {
             window.scrollTo({
                 top: targetTop,
                 behavior: "smooth"
             });
         });
+    }
+
+    function startAutoScrollWatcher() {
+        window.clearInterval(autoScrollTimer);
+        autoScrollTimer = window.setInterval(() => {
+            maybeAutoScrollSchedule();
+        }, AUTO_SCROLL_CHECK_INTERVAL);
     }
 
     function normalize(value) {
